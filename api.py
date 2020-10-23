@@ -1,12 +1,12 @@
-import pickle
-import os.path
-import re
+from utils import *
 
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-from utils import *
+import pickle
+import os.path
+import re
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
 CONFIG_DIR = os.path.expanduser('~/.drivefs/')
