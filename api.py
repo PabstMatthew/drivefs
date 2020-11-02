@@ -77,8 +77,8 @@ class DriveAPI():
         return results
     
     def traverse_path(self, path):
-        # TODO replace this if it's too slow to check the complete path everytime
         dbg('Traversing path "{}".'.format(path))
+        # TODO cache the results of this lookup somewhere
         hierarchy = re.split(r'/+', path)
         last_item = None
         parent_id = 'root'
@@ -101,15 +101,23 @@ class DriveAPI():
             last_item = item
         return last_item
 
-    def download(self, node, local_path):
+    def download(self, node, local_path, cache=True):
         dbg('Downloading file "{}" to local path "{}".'.format(str(node), local_path))
+        if cache and os.path.exists(local_path):
+            return
         file_id = node['id']
-        # if this file is a Google Workspace document, we need to export it using the configured mimetype
         mimetype = node['mimeType']
-        if mimetype in self.types:
+        if mimetype == 'application/vnd.google-apps.folder':
+            # if this is a folder, make sure the folder exists locally
+            if not os.path.exists(local_path):
+                os.makedirs(local_path)
+            return
+        elif mimetype in self.types:
+            # if this file is a Google Workspace document, we need to export it using the configured mimetype
             mimetype = self.types[mimetype]
             request = self.service.files().export_media(fileId=file_id, mimeType=mimetype)
         else:
+            # otherwise, this is just a generic file
             request = self.service.files().get_media(fileId=file_id)
         # download the file
         fh = io.BytesIO()
@@ -119,17 +127,15 @@ class DriveAPI():
             status, done = downloader.next_chunk()
             dbg("Download {}%.".format(int(status.progress()*100)))
         # write the data to a file
-        dst = local_path+node['name']
-        with open(dst, "wb") as f:
+        with open(local_path, "wb") as f:
             f.write(fh.getbuffer())
 
 def main():
     api = DriveAPI()
 
     # API call sample
-    node = api.traverse_path('/folder1/presentation1')
+    node = api.traverse_path('/folder1')
     print(node)
-    api.download(node, './')
     '''
     results = api.exec_query("'root' in parents")
     items = results.get('files', [])
