@@ -75,7 +75,15 @@ class DriveAPI():
             fields='files(id, name, mimeType, modifiedTime, viewedByMeTime, createdTime)'
         ).execute()
         return results
-    
+
+    def get_file(self, fid):
+        dbg('Finding file by ID {}'.format(fid))
+        results = self.service.files().get(
+            fileId=fid,
+            fields='id, name, mimeType, modifiedTime, viewedByMeTime, createdTime'
+        ).execute()
+        return results
+
     def traverse_path(self, path):
         dbg('Traversing path "{}".'.format(path))
         # TODO cache the results of this lookup somewhere

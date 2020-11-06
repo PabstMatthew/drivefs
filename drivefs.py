@@ -14,111 +14,127 @@ class DriveFS(Operations):
         dbg('Intializing API')
         self.api = DriveAPI()
         self.tmp_dir = '/tmp/drivefs'
-        self.init_tmp()
+        self.path_to_id = dict()
+        self._init_tmp()
+        self._build_cache()
 
     ''' Helper methods '''
 
-    def init_tmp(self):
+    def _build_cache(self):
+        # Build a locally cached version of the Google Drive by downloading
+        # all files to the temporary directory.
+        dbg('Building local cache')
+        stack = [(self.tmp_dir, 'root')]
+        while len(stack) != 0:
+            cur = stack.pop()
+            path = cur[0]
+            dir_name = cur[1]
+            results = self.api.exec_query("'{}' in parents".format(dir_name))
+            items = results.get('files', [])
+            if not items:
+                continue
+            for item in items:
+                new_path = path+'/'+item['name']
+                short_path = new_path[len(self.tmp_dir):]
+                self.path_to_id[short_path] = item['id']
+                self.api.download(item, new_path)
+                # fix up file time metadata
+                atime = tstr_to_posix(item.get('viewedByMeTime'))
+                mtime = tstr_to_posix(item.get('modifiedTime'))
+                os.utime(new_path, (atime, mtime))
+                # if this is a directory, so add it to the stack for processing
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    stack.append((new_path, item['id']))
+
+    def _refresh_path(self, path):
+        # Check for changes to a path, and make changes if necessary.
+        dbg('Checking for changes on file {}'.format(path))
+        if path not in self.path_to_id:
+            dbg('File "{}" not found'.format(path))
+            # TODO should probably do some check that the file doesn't exist remotely
+            return
+        fid = self.path_to_id[path]
+        item = self.api.get_file(fid)
+        if not item:
+            dbg('File does not exist anymore!')
+            # TODO remove from local cache?
+        else:
+            lpath = self._lpath(path)
+            if item['modifiedTime'] > os.path.getmtime(lpath):
+                # the file is stale, so we need to fix up the local cache
+                dbg('Locally cached copy is stale!')
+                if item['mimeType'] != 'application/vnd.google-apps.folder':
+                    # if the file was not a folder, just redownload the new file
+                    self.api.download(item, lpath)
+                else:
+                    # if the file was a folder, we need to do some more complicated checks
+                    # TODO
+                    pass
+
+    def _init_tmp(self):
+        dbg('Initializing temporary directory')
         if os.path.exists(self.tmp_dir):
             err('"{}" already exists! Remove it or rename it to continue.'.format(self.tmp_dir))
         os.makedirs(self.tmp_dir)
 
-    def cleanup_tmp(self):
+    def _cleanup_tmp(self):
+        dbg('Cleaning up temporary directory')
         if os.path.exists(self.tmp_dir):
             shutil.rmtree(self.tmp_dir)
+
+    def _lpath(self, path):
+        return self.tmp_dir+path;
 
     ''' Filesystem methods '''
 
     def destroy(self, path):
         dbg('destroy: {}'.format(path))
-        self.cleanup_tmp()
+        self._cleanup_tmp()
 
     def access(self, path, mode):
         dbg('access: {}'.format(path))
-        # / (root) should always exist.
-        # for other files, do a traversal to check for existence
-        if path != '/' and self.api.traverse_path(path) is None:
+        lpath = self._lpath(path)
+        if not os.access(lpath, mode):
             raise FuseOSError(errno.ENOENT)
 
     def chmod(self, path, mode):
         dbg('chmod: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        full_path = self._full_path(path)
-        return os.chmod(full_path, mode)
-        '''
+        lpath = self._lpath(path)
+        lpath = self._lpath(path)
+        return os.chmod(lpath, mode)
 
     def chown(self, path, uid, gid):
         dbg('chown: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        return os.chown(full_path, uid, gid)
-        '''
+        lpath = self._lpath(path)
+        return os.chown(lpath, uid, gid)
 
     def getattr(self, path, fh=None):
         dbg('getattr: {}'.format(path))
 
-        # if called on root, just return values for the temporary directory
-        if path == '/':
-            st = os.lstat(self.tmp_dir)
-            return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
-                     'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
-
-        # traverse the path and set the result accordingly
-        node = self.api.traverse_path(path)
-        if node is None:
-            raise FuseOSError(errno.ENOENT)
-        local_path = self.tmp_dir+path
-        self.api.download(node, local_path)
-        st = os.lstat(local_path)
-        result = dict()
-        # TODO fix all this stuff
-        result['st_atime'] = tstr_to_posix(node.get('viewedByMeTime'))
-        result['st_ctime'] = tstr_to_posix(node.get('createdTime'))
-        result['st_mtime'] = tstr_to_posix(node.get('modifiedTime'))
-        result['st_uid'] = getattr(st, 'st_uid')
-        result['st_gid'] = getattr(st, 'st_gid')
-        result['st_mode'] = getattr(st, 'st_mode')
-        result['st_nlink'] = getattr(st, 'st_nlink')
-        result['st_size'] = getattr(st, 'st_size')
-        result['st_blocks'] = getattr(st, 'st_blocks')
-        return result
+        lpath = self._lpath(path)
+        st = os.lstat(lpath)
+        return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
+                     'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid', 'st_blocks'))
 
     def readdir(self, path, fh):
         dbg('readdir: {}'.format(path))
         dirents = ['.', '..']
 
-        # figure which directory is the one in question
-        dir_name = None
-        if path == '/':
-            dir_name = 'root'
-        else:
-            node = self.api.traverse_path(path)
-            if node and node['mimeType'] == 'application/vnd.google-apps.folder':
-                dir_name = node['name']
-
-        # if it was a valid directory, list its children
-        if dir_name:
-            results = self.api.exec_query("'{}' in parents".format(dir_name))
-            child_nodes = results.get('files', [])
-            children = [x['name'] for x in child_nodes]
-            dirents.extend(children)
+        lpath = self._lpath(path)
+        if os.path.isdir(lpath):
+            dirents.extend(os.listdir(lpath))
         for r in dirents:
             yield r
 
     def readlink(self, path):
         dbg('readlink: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        pathname = os.readlink(self._full_path(path))
+        lpath = self._lpath(path)
+        pathname = os.readlink(lpath)
         if pathname.startswith("/"):
             # Path name is absolute, sanitize it.
             return os.path.relpath(pathname, self.root)
         else:
             return pathname
-        '''
 
     def mknod(self, path, mode, dev):
         dbg('mknod: {}'.format(path))
@@ -144,23 +160,17 @@ class DriveFS(Operations):
 
     def statfs(self, path):
         dbg('statfs: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        stv = os.statvfs(full_path)
+        lpath = self._lpath(path)
+        stv = os.statvfs(lpath)
         return dict((key, getattr(stv, key)) for key in ('f_bavail', 'f_bfree',
             'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
             'f_frsize', 'f_namemax'))
-        '''
 
     ''' File methods '''
     def open(self, path, flags):
         dbg('open: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        return os.open(full_path, flags)
-        '''
+        lpath = self._lpath(path)
+        return os.open(lpath, flags)
 
     def create(self, path, mode, fi=None):
         dbg('create: {}'.format(path))
@@ -172,11 +182,8 @@ class DriveFS(Operations):
 
     def read(self, path, length, offset, fh):
         dbg('read: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
         os.lseek(fh, offset, os.SEEK_SET)
         return os.read(fh, length)
-        '''
 
     def write(self, path, buf, offset, fh):
         dbg('write: {}'.format(path))
