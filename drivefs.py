@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from utils import *
-from api import DriveAPI
+from api import *
 
 from fuse import FUSE, FuseOSError, Operations
 
@@ -14,7 +14,13 @@ class DriveFS(Operations):
         dbg('Intializing API')
         self.api = DriveAPI()
         self.tmp_dir = '/tmp/drivefs'
+
+        # These dicts cache local state, and need to be updated for relevant operations
         self.path_to_id = dict()
+        self.id_to_item = dict()
+        self.id_to_children = dict()
+
+        # Initialize the local FS
         self._init_tmp()
         self._build_cache()
 
@@ -24,52 +30,87 @@ class DriveFS(Operations):
         # Build a locally cached version of the Google Drive by downloading
         # all files to the temporary directory.
         dbg('Building local cache')
-        stack = [(self.tmp_dir, 'root')]
+        stack = [('', 'root')]
         while len(stack) != 0:
             cur = stack.pop()
             path = cur[0]
-            dir_name = cur[1]
-            results = self.api.exec_query("'{}' in parents".format(dir_name))
-            items = results.get('files', [])
+            dir_id = cur[1]
+            items = self.api.exec_query("'{}' in parents".format(dir_id))
             if not items:
                 continue
+            self.id_to_children[dir_id] = []
             for item in items:
-                new_path = path+'/'+item['name']
-                short_path = new_path[len(self.tmp_dir):]
-                self.path_to_id[short_path] = item['id']
-                self.api.download(item, new_path)
-                # fix up file time metadata
-                atime = tstr_to_posix(item.get('viewedByMeTime'))
-                mtime = tstr_to_posix(item.get('modifiedTime'))
-                os.utime(new_path, (atime, mtime))
+                self.id_to_children[dir_id].append(item[ID])
+                new_path = path+'/'+item[NAME]
+                self._cache(item, new_path)
                 # if this is a directory, so add it to the stack for processing
-                if item['mimeType'] == 'application/vnd.google-apps.folder':
-                    stack.append((new_path, item['id']))
+                if item[MTYPE] == FOLDER_MTYPE:
+                    stack.append((new_path, item[ID]))
 
-    def _refresh_path(self, path):
-        # Check for changes to a path, and make changes if necessary.
-        dbg('Checking for changes on file {}'.format(path))
-        if path not in self.path_to_id:
-            dbg('File "{}" not found'.format(path))
-            # TODO should probably do some check that the file doesn't exist remotely
+    def _cache(self, item, rpath):
+        # Cache the file 'item' at the remote path 'rpath'
+        dbg('Caching file "{}" at "{}".'.format(item[NAME], rpath))
+        lpath = self._lpath(rpath)
+        # fix up internal state caches
+        self.path_to_id[rpath] = item[ID]
+        self.id_to_item[item[ID]] = item
+        # download the file
+        self.api.download(item, lpath)
+        # fix up file time metadata
+        atime = tstr_to_posix(item.get(ATIME))
+        mtime = tstr_to_posix(item.get(MTIME))
+        os.utime(lpath, (atime, mtime))
+
+    def _refresh_local(self, rpath):
+        # Ensure that the local copy of a file is up-to-date with the remote version.
+        dbg('Refreshing local copy of "{}".'.format(rpath))
+        if re.fullmatch('/+', rpath):
+            # If this is the root, nothing needs to be done
             return
-        fid = self.path_to_id[path]
-        item = self.api.get_file(fid)
-        if not item:
-            dbg('File does not exist anymore!')
-            # TODO remove from local cache?
+
+        if rpath not in self.path_to_id:
+            # File not cached locally
+            tree = re.split('/+', rpath)
+            fname = tree[-1]
+            items = self.api.exec_query('name = "{}"'.format(fname))
+            if len(items) == 0:
+                dbg('File not found remotely.')
+                return
+            item = self.api.traverse_path(rpath)
+            self._cache(item, rpath)
         else:
-            lpath = self._lpath(path)
-            if item['modifiedTime'] > os.path.getmtime(lpath):
-                # the file is stale, so we need to fix up the local cache
-                dbg('Locally cached copy is stale!')
-                if item['mimeType'] != 'application/vnd.google-apps.folder':
-                    # if the file was not a folder, just redownload the new file
-                    self.api.download(item, lpath)
+            # File cached locally
+            lpath = self._lpath(rpath)
+            fid = self.path_to_id[rpath]
+            local_item = self.id_to_item[fid]
+            remote_item = self.api.get_file(fid)
+            if not remote_item:
+                dbg('File does not exist anymore!')
+                if local_item[MTYPE] != FOLDER_MTYPE:
+                    os.remove(lpath)
                 else:
-                    # if the file was a folder, we need to do some more complicated checks
-                    # TODO
+                    # TODO what should we do if a folder doesn't exist anymore?
                     pass
+            else:
+                if local_item[MTYPE] != remote_item[MTYPE]:
+                    err('Mimetype changed!') # TODO when would this ever happen?
+                if local_item[PARENTS] != remote_item[PARENTS]:
+                    dbg('Parents changed!')
+                    # TODO
+                if local_item[TRASHED] != remote_item[TRASHED]:
+                    if local_item[TRASHED]:
+                        dbg('File remotely restored!')
+                        # TODO
+                    else:
+                        dbg('File remotely trashed!')
+                        # TODO
+                if local_item[MTIME] < remote_item[MTIME]:
+                    dbg('Locally cached copy is stale!')
+                    # TODO
+
+
+    def _sync_remote(self, path):
+        pass
 
     def _init_tmp(self):
         dbg('Initializing temporary directory')
@@ -82,8 +123,13 @@ class DriveFS(Operations):
         if os.path.exists(self.tmp_dir):
             shutil.rmtree(self.tmp_dir)
 
-    def _lpath(self, path):
-        return self.tmp_dir+path;
+    def _rpath(self, lpath):
+        # Return the remote filepath from the local path
+        return lpath[len(self.tmp_dir):]
+
+    def _lpath(self, rpath):
+        # Return the local filepath from the remote path
+        return self.tmp_dir+rpath;
 
     ''' Filesystem methods '''
 
@@ -95,7 +141,10 @@ class DriveFS(Operations):
         dbg('access: {}'.format(path))
         lpath = self._lpath(path)
         if not os.access(lpath, mode):
-            raise FuseOSError(errno.ENOENT)
+            # if file doesn't exist locally, refresh and try again
+            self._refresh_local(path)
+            if not os.access(lpath, mode):
+                raise FuseOSError(errno.ENOENT)
 
     def chmod(self, path, mode):
         dbg('chmod: {}'.format(path))
@@ -110,8 +159,12 @@ class DriveFS(Operations):
 
     def getattr(self, path, fh=None):
         dbg('getattr: {}'.format(path))
-
         lpath = self._lpath(path)
+        try:
+            st = os.lstat(lpath)
+        except FileNotFoundError:
+            # if file doesn't exist locally, refresh and try again
+            self._refresh_local(path)
         st = os.lstat(lpath)
         return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                      'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid', 'st_blocks'))
@@ -119,7 +172,8 @@ class DriveFS(Operations):
     def readdir(self, path, fh):
         dbg('readdir: {}'.format(path))
         dirents = ['.', '..']
-
+        # reads should be consistent
+        self._refresh_local(path)
         lpath = self._lpath(path)
         if os.path.isdir(lpath):
             dirents.extend(os.listdir(lpath))

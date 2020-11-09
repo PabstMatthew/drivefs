@@ -16,6 +16,18 @@ TYPE_FNAME = 'types.py'
 CONFIG_DIR = os.path.expanduser('~/.drivefs/')
 CONFIG_TYPE_PATH = CONFIG_DIR+TYPE_FNAME
 
+FOLDER_MTYPE = 'application/vnd.google-apps.folder'
+
+ID = 'id'
+NAME = 'name'
+MTYPE = 'mimeType'
+ATIME = 'viewedByMeTime'
+MTIME = 'modifiedTime'
+PARENTS = 'parents'
+TRASHED = 'trashed'
+FIELD_LIST = [ID, NAME, MTYPE, MTIME, PARENTS, ATIME, MTIME, PARENTS, TRASHED]
+FIELDS = ', '.join(FIELD_LIST)
+
 class DriveAPI():
     def __init__(self):
         dbg('Creating API instance.')
@@ -72,15 +84,15 @@ class DriveAPI():
             q=query,
             spaces='drive',
             corpora='user',
-            fields='files(id, name, mimeType, modifiedTime, viewedByMeTime, createdTime)'
+            fields='files({})'.format(FIELDS)
         ).execute()
-        return results
+        return results.get('files', [])
 
     def get_file(self, fid):
         dbg('Finding file by ID {}'.format(fid))
         results = self.service.files().get(
             fileId=fid,
-            fields='id, name, mimeType, modifiedTime, viewedByMeTime, createdTime'
+            fields=FIELDS,
         ).execute()
         return results
 
@@ -95,8 +107,7 @@ class DriveAPI():
                 # handle any empty filenames resulting from extra slashes
                 continue
             # look for the current file in the current parent
-            results = self.exec_query("name = '{0}' and '{1}' in parents".format(fname, parent_id))
-            items = results.get('files', [])
+            items = self.exec_query("name = '{0}' and '{1}' in parents".format(fname, parent_id))
             if not items:
                 dbg('File "{}" not found!'.format(fname))
                 return None
@@ -113,9 +124,9 @@ class DriveAPI():
         dbg('Downloading file "{}" to local path "{}".'.format(str(node), local_path))
         if cache and os.path.exists(local_path):
             return
-        file_id = node['id']
-        mimetype = node['mimeType']
-        if mimetype == 'application/vnd.google-apps.folder':
+        file_id = node[ID]
+        mimetype = node[MTYPE]
+        if mimetype == FOLDER_MTYPE:
             # if this is a folder, make sure the folder exists locally
             if not os.path.exists(local_path):
                 os.makedirs(local_path)
