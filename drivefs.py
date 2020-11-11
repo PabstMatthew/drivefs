@@ -14,6 +14,7 @@ class DriveFS(Operations):
         dbg('Intializing API')
         self.api = DriveAPI()
         self.tmp_dir = '/tmp/drivefs'
+        self.trash_dir = '/.Trash'
 
         # These dicts cache local state, and need to be updated for relevant operations
         self.path_to_id = dict()
@@ -38,10 +39,11 @@ class DriveFS(Operations):
             items = self.api.exec_query("'{}' in parents".format(dir_id))
             if not items:
                 continue
-            self.id_to_children[dir_id] = []
             for item in items:
-                self.id_to_children[dir_id].append(item[ID])
-                new_path = path+'/'+item[NAME]
+                if item[TRASHED] and path[:len(self.trash_dir)] != self.trash_dir:
+                    new_path = self.trash_dir+'/'+item[NAME]
+                else:
+                    new_path = path+'/'+item[NAME]
                 self._cache(item, new_path)
                 # if this is a directory, so add it to the stack for processing
                 if item[MTYPE] == FOLDER_MTYPE:
@@ -54,6 +56,10 @@ class DriveFS(Operations):
         # fix up internal state caches
         self.path_to_id[rpath] = item[ID]
         self.id_to_item[item[ID]] = item
+        parent = item[PARENTS][0]
+        if not parent in self.id_to_children:
+            self.id_to_children[parent] = []
+        self.id_to_children[parent].append(item[ID])
         # download the file
         self.api.download(item, lpath)
         # fix up file time metadata
@@ -61,11 +67,25 @@ class DriveFS(Operations):
         mtime = tstr_to_posix(item.get(MTIME))
         os.utime(lpath, (atime, mtime))
 
+    def _update_in_hierarchy(self, old_rpath, new_item):
+        # Move a cached file to its new path, and update internal state
+        # TODO
+        '''
+        # Make sure internal state is consistent
+        self.path_to_id[rpath] = fid
+        old_parent = local_item[PARENTS][0]
+        new_parent = remote_item[PARENTS][0]
+        if old_parent != new_parent:
+            del self.id_to_children[old_parent]
+            self.id_to_children[new_parent] = fid
+        '''
+        pass
+
     def _refresh_local(self, rpath):
         # Ensure that the local copy of a file is up-to-date with the remote version.
         dbg('Refreshing local copy of "{}".'.format(rpath))
-        if re.fullmatch('/+', rpath):
-            # If this is the root, nothing needs to be done
+        if rpath == '/' or rpath == self.trash_dir:
+            # If this is the root or the trash dir, nothing needs to be done
             return
 
         if rpath not in self.path_to_id:
@@ -82,34 +102,52 @@ class DriveFS(Operations):
             # File cached locally
             lpath = self._lpath(rpath)
             fid = self.path_to_id[rpath]
+            # TODO there is a case where a file is replaced by a new file,
+            # which is currently not accounted for here
             local_item = self.id_to_item[fid]
             remote_item = self.api.get_file(fid)
+            self.id_to_item[fid] = remote_item
             if not remote_item:
                 dbg('File does not exist anymore!')
                 if local_item[MTYPE] != FOLDER_MTYPE:
                     os.remove(lpath)
                 else:
-                    # TODO what should we do if a folder doesn't exist anymore?
-                    pass
+                    # Make sure the directory is empty
+                    children = os.listdir(lpath)
+                    while len(children) > 0:
+                        child = children.pop()
+                        child_rpath = rpath+'/'+child
+                        if child_rpath in self.path_to_id:
+                            # Child file exists, but was moved
+                            child_id = self.path_to_id[child_rpath]
+                            child_item = self.api.get_file(fid)
+                            self._update_in_hierarchy(child_rpath, remote_item)
+                        else:
+                            # Child file is gone too, so remove the child file
+                            child_lpath = lpath+'/'+child
+                            os.remove(child_lpath)
+                    # Finally, remove the directory
+                    os.rmdir(lpath)
             else:
                 if local_item[MTYPE] != remote_item[MTYPE]:
-                    err('Mimetype changed!') # TODO when would this ever happen?
+                    # This should never happen.
+                    err('Mimetype changed!') 
                 if local_item[PARENTS] != remote_item[PARENTS]:
                     dbg('Parents changed!')
-                    # TODO
+                    self._update_in_hierarchy(lpath, remote_item)
                 if local_item[TRASHED] != remote_item[TRASHED]:
                     if local_item[TRASHED]:
                         dbg('File remotely restored!')
-                        # TODO
                     else:
                         dbg('File remotely trashed!')
-                        # TODO
+                    self._update_in_hierarchy(lpath, remote_item)
                 if local_item[MTIME] < remote_item[MTIME]:
                     dbg('Locally cached copy is stale!')
-                    # TODO
+                    self._cache(remote_item, rpath)
 
 
     def _sync_remote(self, path):
+        # Push local file data/attributes to the remote.
         pass
 
     def _init_tmp(self):
@@ -117,6 +155,7 @@ class DriveFS(Operations):
         if os.path.exists(self.tmp_dir):
             err('"{}" already exists! Remove it or rename it to continue.'.format(self.tmp_dir))
         os.makedirs(self.tmp_dir)
+        os.makedirs(self.tmp_dir+self.trash_dir)
 
     def _cleanup_tmp(self):
         dbg('Cleaning up temporary directory')
@@ -279,7 +318,6 @@ class DriveFS(Operations):
 
 def main(mountpoint):
     FUSE(DriveFS(), mountpoint, nothreads=True, foreground=True)
-    #FUSE(Passthrough(root), mountpoint, nothreads=True, foreground=True)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
