@@ -15,6 +15,8 @@ class DriveFS(Operations):
         self.api = DriveAPI()
         self.tmp_dir = '/tmp/drivefs'
         self.trash_dir = '/.Trash'
+        self.root_name = 'My Drive'
+        self.root_id = self.api.get_file('root')[ID]
 
         # These dicts cache local state, and need to be updated for relevant operations
         self.path_to_id = dict()
@@ -27,11 +29,15 @@ class DriveFS(Operations):
 
     ''' Helper methods '''
 
+    def _in_trash(self, rpath):
+        # Returns whether a given remote path is in the trash directory
+        return rpath[:len(self.trash_dir)] == self.trash_dir
+
     def _build_cache(self):
         # Build a locally cached version of the Google Drive by downloading
         # all files to the temporary directory.
         dbg('Building local cache')
-        stack = [('', 'root')]
+        stack = [('', self.root_id)]
         while len(stack) != 0:
             cur = stack.pop()
             path = cur[0]
@@ -40,7 +46,7 @@ class DriveFS(Operations):
             if not items:
                 continue
             for item in items:
-                if item[TRASHED] and path[:len(self.trash_dir)] != self.trash_dir:
+                if item[TRASHED] and not self._in_trash(path):
                     new_path = self.trash_dir+'/'+item[NAME]
                 else:
                     new_path = path+'/'+item[NAME]
@@ -67,84 +73,170 @@ class DriveFS(Operations):
         mtime = tstr_to_posix(item.get(MTIME))
         os.utime(lpath, (atime, mtime))
 
-    def _update_in_hierarchy(self, old_rpath, new_item):
+    def _get_rpath(self, item):
+        # Calculates the remote path for an item
+        dbg('Getting remote path for item {}'.format(item))
+        rpath = item[NAME]
+        cur_item = item
+        is_trashed = item[TRASHED]
+        while True:
+            cur_item = self.api.get_file(cur_item[PARENTS][0])
+            if cur_item[NAME] == self.root_name:
+                # TODO other cases like shared drives
+                rpath = '/'+rpath
+                break
+            rpath = cur_item[NAME]+'/'+rpath
+        if is_trashed:
+            rpath = self.trash_dir+rpath
+        return rpath
+
+    def _get_cached_rpath(self, fid):
+        for rp, f in self.path_to_id.items():
+            if f == fid: 
+                return rp
+        err('Failed to find file ID "{}" in local state!'.format(fid))
+
+    def _update_in_hierarchy(self, old_rpath, old_item, new_item):
         # Move a cached file to its new path, and update internal state
-        # TODO
-        '''
-        # Make sure internal state is consistent
-        self.path_to_id[rpath] = fid
-        old_parent = local_item[PARENTS][0]
-        new_parent = remote_item[PARENTS][0]
+        # find new location in hierarchy
+        new_rpath = self._get_rpath(new_item)
+        dbg('Moving cached file at "{}" to "{}".'.format(old_rpath, new_rpath))
+        dbg('Old item: {}'.format(old_item))
+        dbg('New item: {}'.format(new_item))
+        # move the file
+        old_lpath = self._lpath(old_rpath)
+        new_lpath = self._lpath(new_rpath)
+        os.rename(old_lpath, new_lpath)
+        # fix internal state
+        fid = new_item[ID]
+        del self.path_to_id[old_rpath]
+        self.path_to_id[new_rpath] = fid
+        self.id_to_item[fid] = new_item
+        old_parent = old_item[PARENTS][0]
+        new_parent = new_item[PARENTS][0]
         if old_parent != new_parent:
-            del self.id_to_children[old_parent]
-            self.id_to_children[new_parent] = fid
-        '''
-        pass
+            self.id_to_children[old_parent].remove(fid)
+            self.id_to_children[new_parent].append(fid)
+            dbg('Removing from metadata {} {}'.format(self.id_to_children[old_parent], self.id_to_children[new_parent]))
+
+    def _update_directory(self, fid, rpath):
+        # Update folder contents
+        dbg('Updating directory contents.')
+        new_children_items = self.api.exec_query('"{}" in parents'.format(fid))
+        new_children = set([child_item[ID] for child_item in new_children_items])
+        old_children = set(self.id_to_children[fid])
+        for new_child in new_children.difference(old_children):
+            # cache new children
+            for new_child_item in new_children_items:
+                child_id = new_child_item[ID]
+                if child_id == new_child:
+                    if child_id in self.id_to_item:
+                        # new child came from another directory
+                        old_rpath = self._get_cached_rpath(child_id)
+                        self._update_in_hierarchy(old_rpath, self.id_to_item[child_id], new_child_item)
+                    else:
+                        child_rpath = rpath+'/'+new_child_item[NAME]
+                        self._cache(new_child_item, child_rpath)
+                    break
+        for removed_child in old_children.difference(new_children):
+            # remove old children
+            removed_item = self.id_to_item[removed_child]
+            removed_rpath = rpath+'/'+removed_item[NAME]
+            new_item = self.api.get_file(removed_item[ID])
+            if new_item:
+                # item exists somewhere else, so update it
+                self._update_in_hierarchy(removed_rpath, removed_item, new_item)
+            else:
+                # remove the item
+                self._remove_from_cache(removed_item, removed_rpath)
+
+    def _remove_from_cache(self, item, rpath):
+        dbg('Removing "{}" from the cache'.format(rpath))
+        lpath = self._lpath(rpath)
+        if item[MTYPE] != FOLDER_MTYPE:
+            os.remove(lpath)
+        else:
+            # Make sure the directory is empty
+            children = os.listdir(lpath)
+            while len(children) > 0:
+                child = children.pop()
+                child_rpath = rpath+'/'+child
+                if child_rpath in self.path_to_id:
+                    # Child file exists, but was moved
+                    child_id = self.path_to_id[child_rpath]
+                    child_item = self.api.get_file(fid)
+                    old_child_item = self.id_to_item[child_id]
+                    self._update_in_hierarchy(child_rpath, old_child_item, child_item)
+                else:
+                    # Child file is gone too, so remove the child file
+                    child_lpath = lpath+'/'+child
+                    os.remove(child_lpath)
+            # Finally, remove the directory
+            os.rmdir(lpath)
+            del self.id.to_children[item[ID]]
+        del self.path_to_id[rpath]
+        del self.id_to_item[item[ID]]
 
     def _refresh_local(self, rpath):
         # Ensure that the local copy of a file is up-to-date with the remote version.
         dbg('Refreshing local copy of "{}".'.format(rpath))
-        if rpath == '/' or rpath == self.trash_dir:
-            # If this is the root or the trash dir, nothing needs to be done
+        if rpath == '/':
+            # If this is the root, update the dir contents, then return
+            self._update_directory(self.root_id, '')
+            return
+        if rpath == self.trash_dir:
+            # If this is the trash dir, update the dir contents (TODO)
             return
 
         if rpath not in self.path_to_id:
-            # File not cached locally
+            # Path not cached locally
             tree = re.split('/+', rpath)
             fname = tree[-1]
             items = self.api.exec_query('name = "{}"'.format(fname))
+            # quick check to see if this filename even exists
             if len(items) == 0:
                 dbg('File not found remotely.')
                 return
+            # if such a filename exists, let's make sure we get the right one
             item = self.api.traverse_path(rpath)
-            self._cache(item, rpath)
-        else:
-            # File cached locally
-            lpath = self._lpath(rpath)
-            fid = self.path_to_id[rpath]
-            # TODO there is a case where a file is replaced by a new file,
-            # which is currently not accounted for here
-            local_item = self.id_to_item[fid]
-            remote_item = self.api.get_file(fid)
-            self.id_to_item[fid] = remote_item
-            if not remote_item:
-                dbg('File does not exist anymore!')
-                if local_item[MTYPE] != FOLDER_MTYPE:
-                    os.remove(lpath)
-                else:
-                    # Make sure the directory is empty
-                    children = os.listdir(lpath)
-                    while len(children) > 0:
-                        child = children.pop()
-                        child_rpath = rpath+'/'+child
-                        if child_rpath in self.path_to_id:
-                            # Child file exists, but was moved
-                            child_id = self.path_to_id[child_rpath]
-                            child_item = self.api.get_file(fid)
-                            self._update_in_hierarchy(child_rpath, remote_item)
-                        else:
-                            # Child file is gone too, so remove the child file
-                            child_lpath = lpath+'/'+child
-                            os.remove(child_lpath)
-                    # Finally, remove the directory
-                    os.rmdir(lpath)
+            if not item[ID] in self.id_to_item:
+                # cache this new file, and we're done
+                self._cache(item, rpath)
+                return
             else:
-                if local_item[MTYPE] != remote_item[MTYPE]:
-                    # This should never happen.
-                    err('Mimetype changed!') 
-                if local_item[PARENTS] != remote_item[PARENTS]:
-                    dbg('Parents changed!')
-                    self._update_in_hierarchy(lpath, remote_item)
-                if local_item[TRASHED] != remote_item[TRASHED]:
-                    if local_item[TRASHED]:
-                        dbg('File remotely restored!')
-                    else:
-                        dbg('File remotely trashed!')
-                    self._update_in_hierarchy(lpath, remote_item)
-                if local_item[MTIME] < remote_item[MTIME]:
-                    dbg('Locally cached copy is stale!')
-                    self._cache(remote_item, rpath)
+                # File was cached under a different path, so let's just restart the whole check
+                # (this could be made a little more efficient, but it's a rare case)
+                rpath = self._get_cached_rpath(fid)
 
+        # File cached locally
+        lpath = self._lpath(rpath)
+        fid = self.path_to_id[rpath]
+        # TODO there is a case where a file is replaced by a new file,
+        # which is currently not accounted for here
+        local_item = self.id_to_item[fid]
+        remote_item = self.api.get_file(fid)
+        self.id_to_item[fid] = remote_item
+        if not remote_item:
+            dbg('File does not exist anymore!')
+            self._remove_from_cache(local_item, rpath)
+        else:
+            if local_item[MTYPE] != remote_item[MTYPE]:
+                # This should never happen.
+                err('Mimetype changed!') 
+            if local_item[PARENTS] != remote_item[PARENTS]:
+                dbg('Parents changed!')
+                self._update_in_hierarchy(rpath, local_item, remote_item)
+            if local_item[TRASHED] != remote_item[TRASHED]:
+                if local_item[TRASHED]:
+                    dbg('File remotely restored!')
+                else:
+                    dbg('File remotely trashed!')
+                self._update_in_hierarchy(rpath, local_item, remote_item)
+            if local_item[MTIME] < remote_item[MTIME]:
+                dbg('Locally cached copy is stale!')
+                self._cache(remote_item, rpath)
+            if remote_item[MTYPE] == FOLDER_MTYPE:
+                self._update_directory(fid, rpath)
 
     def _sync_remote(self, path):
         # Push local file data/attributes to the remote.
