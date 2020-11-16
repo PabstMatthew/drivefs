@@ -133,7 +133,7 @@ class DriveAPI():
             return
         elif mimetype in self.types:
             # if this file is a Google Workspace document, we need to export it using the configured mimetype
-            mimetype = self.types[mimetype]
+            mimetype = self.types[mimetype][0]
             request = self.service.files().export_media(fileId=file_id, mimeType=mimetype)
         else:
             # otherwise, this is just a generic file

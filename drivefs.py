@@ -59,6 +59,10 @@ class DriveFS(Operations):
         # Cache the file 'item' at the remote path 'rpath'
         dbg('Caching file "{}" at "{}".'.format(item[NAME], rpath))
         lpath = self._lpath(rpath)
+        # add extension
+        mimetype = item[MTYPE]
+        if mimetype in self.api.types:
+            lpath += self.api.types[mimetype][1]
         # fix up internal state caches
         self.path_to_id[rpath] = item[ID]
         self.id_to_item[item[ID]] = item
@@ -88,6 +92,10 @@ class DriveFS(Operations):
             rpath = cur_item[NAME]+'/'+rpath
         if is_trashed:
             rpath = self.trash_dir+rpath
+        # add extension
+        mimetype = item[MTYPE]
+        if mimetype in self.api.types:
+            lpath += self.api.types[mimetype][1]
         return rpath
 
     def _get_cached_rpath(self, fid):
@@ -267,6 +275,7 @@ class DriveFS(Operations):
     def destroy(self, path):
         dbg('destroy: {}'.format(path))
         self._cleanup_tmp()
+        # call _sync_remote on every file
 
     def access(self, path, mode):
         dbg('access: {}'.format(path))
@@ -323,10 +332,15 @@ class DriveFS(Operations):
 
     def mknod(self, path, mode, dev):
         dbg('mknod: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        return os.mknod(self._full_path(path), mode, dev)
-        '''
+        if dev != 0:
+            # don't support creating special device files
+            raise FuseOSError(errno.ENOSYS)
+        lpath = self._lpath(path)
+        # make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
+        os.mknod(lpath, mode, dev)
+        # register the file with the remote
+
+
 
     def rmdir(self, path):
         dbg('rmdir: {}'.format(path))
