@@ -247,9 +247,11 @@ class DriveFS(Operations):
             if remote_item[MTYPE] == FOLDER_MTYPE:
                 self._update_directory(fid, rpath)
 
-    def _sync_remote(self, path):
+    def _sync_remote(self, rpath):
         # Push local file data/attributes to the remote.
-        pass
+        dbg('Syncing file "{}" with the remote'.format(rpath))
+        lpath = self._lpath(rpath)
+        # TODO
 
     def _register_file(self, rpath, is_dir):
         dbg('Registering new file at "{}"'.format(rpath))
@@ -267,7 +269,7 @@ class DriveFS(Operations):
         # register new file
         name = rpath[beg+1:]
         in_trash = self._in_trash(rpath)
-        self.api.create_item(name, parent, is_dir, in_trash)
+        self.api.create(name, parent, is_dir, in_trash)
 
     def _init_tmp(self):
         dbg('Initializing temporary directory')
@@ -352,12 +354,12 @@ class DriveFS(Operations):
     def mknod(self, path, mode, dev):
         dbg('mknod: {}'.format(path))
         if dev != 0:
-            # don't support creating special device files
+            # Don't support creating special device files
             raise FuseOSError(errno.ENOSYS)
         lpath = self._lpath(path)
-        # make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
+        # Make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
         os.mknod(lpath, mode, dev)
-        # register the file with the remote
+        # Register the file with the remote
         self._register_file(path, False)
 
     def rmdir(self, path):
@@ -368,11 +370,31 @@ class DriveFS(Operations):
         return os.rmdir(full_path)
         '''
 
+    def unlink(self, path):
+        dbg('unlink: {}'.format(path))
+        raise FuseOSError(errno.ENOSYS)
+
+    def rename(self, old_path, new_path):
+        dbg('rename: {} to {}'.format(old_path, new_path))
+        raise FuseOSError(errno.ENOSYS)
+
+    def utime(self, path, times):
+        dbg('utime: {} to {}'.format(path, times))
+        raise FuseOSError(errno.ENOSYS)
+
+    def symlink(self, path, new_path):
+        dbg('symlink: {} to {}'.format(path, new_path))
+        raise FuseOSError(errno.ENOSYS)
+
+    def link(self, path, new_path):
+        dbg('link: {} to {}'.format(path, new_path))
+        raise FuseOSError(errno.ENOSYS)
+
     def mkdir(self, path, mode):
         dbg('mkdir: {}'.format(path))
-        # make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
+        # Make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
         os.mkdir(self._full_path(path), mode)
-        # register the file with the remote
+        # Register the file with the remote
         self._register_file(path, True)
 
     def statfs(self, path):
@@ -391,11 +413,11 @@ class DriveFS(Operations):
 
     def create(self, path, mode, fi=None):
         dbg('create: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        return os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
-        '''
+        lpath = self._lpath(path)
+        if not os.exists(lpath):
+            # If creating a new file, register it
+            self._register_file(path, False)
+        return os.open(lpath, os.O_WRONLY | os.O_CREAT, mode)
 
     def read(self, path, length, offset, fh):
         dbg('read: {}'.format(path))
@@ -405,40 +427,29 @@ class DriveFS(Operations):
     def write(self, path, buf, offset, fh):
         dbg('write: {}'.format(path))
         raise FuseOSError(errno.ENOSYS)
-        '''
         os.lseek(fh, offset, os.SEEK_SET)
         return os.write(fh, buf)
-        '''
 
     def truncate(self, path, length, fh=None):
         dbg('truncate: {}'.format(path))
         raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        with open(full_path, 'r+') as f:
+        lpath = self._lpath(path)
+        with open(lpath, 'r+') as f:
             f.truncate(length)
-        '''
 
     def flush(self, path, fh):
         dbg('flush: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        return os.fsync(fh)
-        '''
+        os.fsync(fh)
+        self._sync_remote(path)
 
     def release(self, path, fh):
         dbg('release: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        return os.close(fh)
-        '''
+        self.flush(path, fh)
+        os.close(fh)
 
     def fsync(self, path, fdatasync, fh):
         dbg('fsync: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        return self.flush(path, fh)
-        '''
+        self.flush(path, fh)
 
 def main(mountpoint):
     FUSE(DriveFS(), mountpoint, nothreads=True, foreground=True)

@@ -1,7 +1,7 @@
 from utils import *
 
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
@@ -149,7 +149,8 @@ class DriveAPI():
         with open(local_path, "wb") as f:
             f.write(fh.getbuffer())
 
-    def create_item(self, name, parent, is_dir, in_trash):
+    def create(self, name, parent, is_dir, in_trash):
+        dbg('Creating new file "{}" with parent "{}"'.format(name, parent))
         # Register a new file with the remote, without uploading any data
         file_metadata = {
             NAME: name,
@@ -163,8 +164,10 @@ class DriveAPI():
             item = self.service.files().update(fileId=item[ID], body=body).execute()
         return item
 
-    def upload_file(self):
-        pass
+    def upload(self, lpath, fid):
+        dbg('Uploading local path "{}" for file ID "{}"'.format(lpath, fid))
+        media = MediaFileUpload(lpath)
+        self.service.files().update(fileId=fid, media_body=media).execute()
 
 def main():
     api = DriveAPI()
