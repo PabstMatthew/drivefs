@@ -271,6 +271,36 @@ class DriveFS(Operations):
         in_trash = self._in_trash(rpath)
         self.api.create(name, parent, is_dir, in_trash)
 
+    def _remove_file(self, rpath):
+        fid = self.path_to_id[rpath]
+        item = self.id_to_item[fid]
+        lpath = self._lpath(rpath)
+        if item[TRASHED]:
+            # Remove the file permanently
+            self.api.delete(fid)
+            if item[MTYPE] == FOLDER_MTYPE:
+                os.rmdir(lpath)
+                del self.id_to_children[fid]
+            else:
+                os.remove(lpath)
+            del self.path_to_id[rpath]
+            del self.id_to_item[fid]
+        else:
+            # Mark the file as trashed, and set its parent to the root to avoid directory hierachy confusion
+            item[TRASHED] = True
+            item[PARENTS] = ['root']
+            # TODO it would be great if this could be left as the original parent.
+            # to do this, the trash directory logic would need to be changed
+            self.api.update(fid, item)
+            # Fix up internal state
+            del self.path_to_id[rpath]
+            new_rpath = self.trash_dir+'/'+item[NAME]
+            new_lpath = self._lpath(new_rpath)
+            self.path_to_id[new_rpath] = fid
+            os.rename(lpath, new_lpath)
+            if item[MTYPE] == FOLDER_MTYPE:
+                del self.id_to_children[fid]
+
     def _init_tmp(self):
         dbg('Initializing temporary directory')
         if os.path.exists(self.tmp_dir):
@@ -289,7 +319,7 @@ class DriveFS(Operations):
 
     def _lpath(self, rpath):
         # Return the local filepath from the remote path
-        return self.tmp_dir+rpath;
+        return self.tmp_dir+rpath
 
     ''' Filesystem methods '''
 
@@ -364,23 +394,30 @@ class DriveFS(Operations):
 
     def rmdir(self, path):
         dbg('rmdir: {}'.format(path))
+        lpath = self._lpath(path)
+        if not os.path.isdir(lpath):
+            raise FuseOSError(errno.ENOTDIR)
+        if len(os.listdir(lpath)) != 0:
+            raise FuseOSError(errno.ENOTEMPTY)
         raise FuseOSError(errno.ENOSYS)
-        '''
-        full_path = self._full_path(path)
-        return os.rmdir(full_path)
-        '''
+        self._remove_file(path)
 
     def unlink(self, path):
         dbg('unlink: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
+        # Since links aren't supported, assume there's only one link to this file
+        if not os.path.exists(path):
+            raise FuseOSError(errno.ENOENT)
+        self._remove_file(path)
 
     def rename(self, old_path, new_path):
         dbg('rename: {} to {}'.format(old_path, new_path))
+        # TODO
         raise FuseOSError(errno.ENOSYS)
 
     def utime(self, path, times):
         dbg('utime: {} to {}'.format(path, times))
-        raise FuseOSError(errno.ENOSYS)
+        lpath = self._lpath(path)
+        os.utime(lpath, times)
 
     def symlink(self, path, new_path):
         dbg('symlink: {} to {}'.format(path, new_path))

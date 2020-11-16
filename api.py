@@ -149,6 +149,12 @@ class DriveAPI():
         with open(local_path, "wb") as f:
             f.write(fh.getbuffer())
 
+    def delete(self, fid):
+        self.service.files().update(fileId=fid).execute()
+
+    def update(self, fid, body):
+        return self.service.files().update(fileId=fid, body=body).execute()
+
     def create(self, name, parent, is_dir, in_trash):
         dbg('Creating new file "{}" with parent "{}"'.format(name, parent))
         # Register a new file with the remote, without uploading any data
@@ -161,7 +167,7 @@ class DriveAPI():
         item = self.service.files().create(body=file_metadata, fields=FIELDS).execute()
         if in_trash:
             body = {TRASHED: True}
-            item = self.service.files().update(fileId=item[ID], body=body).execute()
+            item = self.trash(item[ID], body)
         return item
 
     def upload(self, lpath, fid):
