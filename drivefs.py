@@ -19,7 +19,7 @@ class DriveFS(Operations):
         self.root_id = self.api.get_file('root')[ID]
 
         # These dicts cache local state, and need to be updated for relevant operations
-        self.path_to_id = dict()
+        self.path_to_id = {self.trash_dir: 'root'}
         self.id_to_item = dict()
         self.id_to_children = dict()
 
@@ -157,6 +157,7 @@ class DriveFS(Operations):
             else:
                 # remove the item
                 self._remove_from_cache(removed_item, removed_rpath)
+        # TODO check for trashed/untrashed items
 
     def _remove_from_cache(self, item, rpath):
         dbg('Removing "{}" from the cache'.format(rpath))
@@ -250,6 +251,24 @@ class DriveFS(Operations):
         # Push local file data/attributes to the remote.
         pass
 
+    def _register_file(self, rpath, is_dir):
+        dbg('Registering new file at "{}"'.format(rpath))
+        beg = rpath.rindex('/')
+        if beg == 0:
+            # parent is root
+            parent = 'root'
+        else:
+            # find parent ID from cached metadata
+            parent_path = rpath[:beg]
+            if not parent_path in self.path_to_id:
+                dbg('Failed to find parent "{}" in cached metadata!'.format(parent_path))
+                raise FuseOSError(errno.ENOENT)
+            parent = self.path_to_id[parent_path]
+        # register new file
+        name = rpath[beg+1:]
+        in_trash = self._in_trash(rpath)
+        self.api.create_item(name, parent, is_dir, in_trash)
+
     def _init_tmp(self):
         dbg('Initializing temporary directory')
         if os.path.exists(self.tmp_dir):
@@ -339,8 +358,7 @@ class DriveFS(Operations):
         # make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
         os.mknod(lpath, mode, dev)
         # register the file with the remote
-
-
+        self._register_file(path, False)
 
     def rmdir(self, path):
         dbg('rmdir: {}'.format(path))
@@ -352,10 +370,10 @@ class DriveFS(Operations):
 
     def mkdir(self, path, mode):
         dbg('mkdir: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        '''
-        return os.mkdir(self._full_path(path), mode)
-        '''
+        # make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
+        os.mkdir(self._full_path(path), mode)
+        # register the file with the remote
+        self._register_file(path, True)
 
     def statfs(self, path):
         dbg('statfs: {}'.format(path))

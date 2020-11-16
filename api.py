@@ -149,22 +149,25 @@ class DriveAPI():
         with open(local_path, "wb") as f:
             f.write(fh.getbuffer())
 
+    def create_item(self, name, parent, is_dir, in_trash):
+        # Register a new file with the remote, without uploading any data
+        file_metadata = {
+            NAME: name,
+            PARENTS: [parent]
+        }
+        if is_dir:
+            file_metadata[MTYPE] = FOLDER_MTYPE
+        item = self.service.files().create(body=file_metadata, fields=FIELDS).execute()
+        if in_trash:
+            body = {TRASHED: True}
+            item = self.service.files().update(fileId=item[ID], body=body).execute()
+        return item
+
+    def upload_file(self):
+        pass
+
 def main():
     api = DriveAPI()
-
-    # API call sample
-    node = api.traverse_path('/folder1')
-    print(node)
-    '''
-    results = api.exec_query("'root' in parents")
-    items = results.get('files', [])
-    if not items:
-        print('No files found.')
-    else:
-        print('Files:')
-        for item in items:
-            print('{0}: {1} ({2})'.format(item['name'], item['id'], item['parents'] if 'parents' in item else 'no parents'))
-    '''
 
 if __name__ == '__main__':
     main()
