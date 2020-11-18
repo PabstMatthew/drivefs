@@ -40,7 +40,6 @@ class DriveAPI():
         dbg('Building service.')
         self.service = build('drive', 'v3', credentials=self.creds)
 
-
     def _init_creds(self):
         # This file stores the user's access and refresh tokens, 
         # and is created automatically when auth flow completes for the first time.
@@ -144,7 +143,7 @@ class DriveAPI():
         done = False
         while done is False:
             status, done = downloader.next_chunk()
-            dbg("Download {}%.".format(int(status.progress()*100)))
+            #dbg("Download {}%.".format(int(status.progress()*100)))
         # write the data to a file
         with open(local_path, "wb") as f:
             f.write(fh.getbuffer())
@@ -153,7 +152,11 @@ class DriveAPI():
         self.service.files().update(fileId=fid).execute()
 
     def update(self, fid, body):
-        return self.service.files().update(fileId=fid, body=body).execute()
+        return self.service.files().update(fileId=fid, body=body, fields=FIELDS).execute()
+
+    def change_parent(self, fid, old_parent, new_parent):
+        return self.service.files().update(fileId=fid, addParents=new_parent, 
+                    removeParents=old_parent, fields=FIELDS).execute()
 
     def create(self, name, parent, is_dir, in_trash):
         dbg('Creating new file "{}" with parent "{}"'.format(name, parent))

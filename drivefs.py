@@ -202,15 +202,18 @@ class DriveFS(Operations):
             tree = re.split('/+', rpath)
             fname = tree[-1]
             items = self.api.exec_query('name = "{}"'.format(fname))
-            # quick check to see if this filename even exists
+            # Quick check to see if this filename even exists
             if len(items) == 0:
                 dbg('File not found remotely.')
                 return
-            # if such a filename exists, let's make sure we get the right one
+            # If such a filename exists, let's make sure we get the right one
             item = self.api.traverse_path(rpath)
             if not item[ID] in self.id_to_item:
-                # cache this new file, and we're done
+                # Cache this new file, and we're done
                 self._cache(item, rpath)
+                return
+            elif item[PARENTS][0] != self._get_parent(rpath):
+                # This was not the file we were looking for
                 return
             else:
                 # File was cached under a different path, so let's just restart the whole check
@@ -256,16 +259,7 @@ class DriveFS(Operations):
     def _register_file(self, rpath, is_dir):
         dbg('Registering new file at "{}"'.format(rpath))
         beg = rpath.rindex('/')
-        if beg == 0:
-            # parent is root
-            parent = 'root'
-        else:
-            # find parent ID from cached metadata
-            parent_path = rpath[:beg]
-            if not parent_path in self.path_to_id:
-                dbg('Failed to find parent "{}" in cached metadata!'.format(parent_path))
-                raise FuseOSError(errno.ENOENT)
-            parent = self.path_to_id[parent_path]
+        parent = self._get_parent(rpath)
         # register new file
         name = rpath[beg+1:]
         in_trash = self._in_trash(rpath)
@@ -313,6 +307,19 @@ class DriveFS(Operations):
         if os.path.exists(self.tmp_dir):
             shutil.rmtree(self.tmp_dir)
 
+    def _get_parent(self, rpath):
+        beg = rpath.rindex('/')
+        if beg == 0:
+            # parent is root
+            return 'root'
+        else:
+            # find parent ID from cached metadata
+            parent_path = rpath[:beg]
+            if not parent_path in self.path_to_id:
+                dbg('Failed to find parent "{}" in cached metadata!'.format(parent_path))
+                raise FuseOSError(errno.ENOENT)
+            return self.path_to_id[parent_path]
+
     def _rpath(self, lpath):
         # Return the remote filepath from the local path
         return lpath[len(self.tmp_dir):]
@@ -351,11 +358,8 @@ class DriveFS(Operations):
     def getattr(self, path, fh=None):
         dbg('getattr: {}'.format(path))
         lpath = self._lpath(path)
-        try:
-            st = os.lstat(lpath)
-        except FileNotFoundError:
-            # if file doesn't exist locally, refresh and try again
-            self._refresh_local(path)
+        if not os.path.exists(lpath):
+            raise FuseOSError(errno.ENOENT)
         st = os.lstat(lpath)
         return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                      'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid', 'st_blocks'))
@@ -411,10 +415,17 @@ class DriveFS(Operations):
 
     def rename(self, old_path, new_path):
         dbg('rename: {} to {}'.format(old_path, new_path))
-        # TODO
-        raise FuseOSError(errno.ENOSYS)
+        if not old_path in self.path_to_id:
+            raise FuseOSError(errno.ENOENT)
+        if os.path.exists(new_path):
+            raise FuseOSError(errno.EEXIST)
+        fid = self.path_to_id[old_path]
+        old_item = self.id_to_item[fid]
+        new_parent = self._get_parent(new_path)
+        new_item = self.api.change_parent(fid, old_item[PARENTS][0], new_parent)
+        self._update_in_hierarchy(old_path, old_item, new_item)
 
-    def utime(self, path, times):
+    def utimens(self, path, times):
         dbg('utime: {} to {}'.format(path, times))
         lpath = self._lpath(path)
         os.utime(lpath, times)
@@ -451,7 +462,7 @@ class DriveFS(Operations):
     def create(self, path, mode, fi=None):
         dbg('create: {}'.format(path))
         lpath = self._lpath(path)
-        if not os.exists(lpath):
+        if not os.path.exists(lpath):
             # If creating a new file, register it
             self._register_file(path, False)
         return os.open(lpath, os.O_WRONLY | os.O_CREAT, mode)
