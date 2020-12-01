@@ -149,7 +149,7 @@ class DriveAPI():
             f.write(fh.getbuffer())
 
     def delete(self, fid):
-        self.service.files().update(fileId=fid).execute()
+        self.service.files().delete(fileId=fid).execute()
 
     def update(self, fid, body):
         return self.service.files().update(fileId=fid, body=body, fields=FIELDS).execute()
@@ -176,7 +176,7 @@ class DriveAPI():
     def upload(self, lpath, fid):
         dbg('Uploading local path "{}" for file ID "{}"'.format(lpath, fid))
         media = MediaFileUpload(lpath)
-        self.service.files().update(fileId=fid, media_body=media).execute()
+        return self.service.files().update(fileId=fid, media_body=media, fields=FIELDS).execute()
 
 def main():
     api = DriveAPI()

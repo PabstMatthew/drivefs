@@ -1,5 +1,6 @@
 import time
-import datetime
+from datetime import datetime, timezone
+import calendar
 
 DEBUG = True
 
@@ -16,13 +17,17 @@ def err(msg):
     print(RED+BOLD+'[ERR] '+END+msg)
     assert False
 
-TIME_FORMAT = '%Y-%m-%dT%H:%M:%S'
+TIME_FORMAT = '%Y-%m-%dT%H:%M:%S.%fZ'
+
+def local_to_utc(local_posix_time):
+    date = datetime.now(tz=timezone.utc)
+    return local_posix_time + time.altzone
 
 def tstr_to_posix(tstr):
     if tstr is None:
-        date = datetime.datetime.now()
+        date = datetime.now(tz=timezone.utc)
     else:
-        tstr = tstr[:tstr.index('.')]
-        date = datetime.datetime.strptime(tstr, TIME_FORMAT)
-    return time.mktime(date.timetuple())
+        #tstr = tstr[:tstr.index('.')]
+        date = datetime.strptime(tstr, TIME_FORMAT)
+    return calendar.timegm(date.timetuple())
 

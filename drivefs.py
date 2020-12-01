@@ -253,8 +253,32 @@ class DriveFS(Operations):
     def _sync_remote(self, rpath):
         # Push local file data/attributes to the remote.
         dbg('Syncing file "{}" with the remote'.format(rpath))
+        if not rpath in self.path_to_id:
+            err('Could not find file "{}" in internal metadata!')
+        fid = self.path_to_id[rpath]
         lpath = self._lpath(rpath)
-        # TODO
+        '''
+            first, check if the remote version is ahead of ours.
+                if so, we might not want to overwrite the remote
+            next, check if the cached copy has been modified more recently 
+                than our internal state says so. if so, push changes to the remote
+        '''
+        remote_item = self.api.get_file(fid)
+        remote_mtime = tstr_to_posix(remote_item[MTIME]) # mtime for the remote file
+        local_item = self.id_to_item[fid]
+        local_mtime = tstr_to_posix(local_item[MTIME]) # mtime for the internally cached metadata
+        cached_mtime = os.path.getmtime(lpath) # mtime for the locally cached copy of the file
+        dbg('Remote MTime: {}, Local MTime: {}, Cached MTime: {}'.format(remote_mtime, local_mtime, cached_mtime))
+        assert local_mtime >= remote_mtime, 'Remote copy fell behind locally cached metadata!'
+        if remote_mtime > local_mtime:
+            # the remote version is ahead of ours!
+            dbg('Remote version is ahead of local version! The remote copy will be overwritten!')
+            # TODO avoid losing work by creating a new file or something
+        if cached_mtime > local_mtime:
+             # the file has recently been written to, so push the changes to the remote
+             dbg('Pushing local changes to "{}" to the remote'.format(rpath))
+             new_item = self.api.upload(lpath, fid)
+             self.id_to_item[fid] = new_item
 
     def _register_file(self, rpath, is_dir):
         dbg('Registering new file at "{}"'.format(rpath))
@@ -263,7 +287,13 @@ class DriveFS(Operations):
         # register new file
         name = rpath[beg+1:]
         in_trash = self._in_trash(rpath)
-        self.api.create(name, parent, is_dir, in_trash)
+        item = self.api.create(name, parent, is_dir, in_trash)
+        # keep local metadata consistent
+        fid = item[ID]
+        self.path_to_id[rpath] = fid
+        self.id_to_item[fid] = item
+        if is_dir:
+            self.id_to_children[fid] = []
 
     def _remove_file(self, rpath):
         fid = self.path_to_id[rpath]
@@ -279,14 +309,20 @@ class DriveFS(Operations):
                 os.remove(lpath)
             del self.path_to_id[rpath]
             del self.id_to_item[fid]
+            old_parent = item[PARENTS][0]
+            self.id_to_children[old_parent].remove(fid)
         else:
             # Mark the file as trashed, and set its parent to the root to avoid directory hierachy confusion
-            item[TRASHED] = True
-            item[PARENTS] = ['root']
             # TODO it would be great if this could be left as the original parent.
             # to do this, the trash directory logic would need to be changed
-            self.api.update(fid, item)
+            old_parent = item[PARENTS][0]
+            if old_parent != self.root_id:
+                self.api.change_parent(fid, old_parent, self.root_id)
+                self.id_to_children[old_parent].remove(fid)
+                self.id_to_children[self.root_id].append(fid)
+            new_item = self.api.update(fid, {TRASHED: True})
             # Fix up internal state
+            self.id_to_item[fid] = new_item
             del self.path_to_id[rpath]
             new_rpath = self.trash_dir+'/'+item[NAME]
             new_lpath = self._lpath(new_rpath)
@@ -403,14 +439,16 @@ class DriveFS(Operations):
             raise FuseOSError(errno.ENOTDIR)
         if len(os.listdir(lpath)) != 0:
             raise FuseOSError(errno.ENOTEMPTY)
-        raise FuseOSError(errno.ENOSYS)
         self._remove_file(path)
 
     def unlink(self, path):
         dbg('unlink: {}'.format(path))
         # Since links aren't supported, assume there's only one link to this file
-        if not os.path.exists(path):
+        lpath = self._lpath(path)
+        if not os.path.exists(lpath):
             raise FuseOSError(errno.ENOENT)
+        if path == self.trash_dir:
+            raise FuseOsError(errno.EINVAL)
         self._remove_file(path)
 
     def rename(self, old_path, new_path):
@@ -419,10 +457,14 @@ class DriveFS(Operations):
             raise FuseOSError(errno.ENOENT)
         if os.path.exists(new_path):
             raise FuseOSError(errno.EEXIST)
+        if old_path == '/':
+            raise FuseOSError(errno.ENOSYS)
+        name = new_path[new_path.rfind('/')+1:]
         fid = self.path_to_id[old_path]
         old_item = self.id_to_item[fid]
         new_parent = self._get_parent(new_path)
         new_item = self.api.change_parent(fid, old_item[PARENTS][0], new_parent)
+        new_item = self.api.update(fid, {NAME: name})
         self._update_in_hierarchy(old_path, old_item, new_item)
 
     def utimens(self, path, times):
@@ -474,16 +516,14 @@ class DriveFS(Operations):
 
     def write(self, path, buf, offset, fh):
         dbg('write: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
-        os.lseek(fh, offset, os.SEEK_SET)
         return os.write(fh, buf)
 
     def truncate(self, path, length, fh=None):
         dbg('truncate: {}'.format(path))
-        raise FuseOSError(errno.ENOSYS)
         lpath = self._lpath(path)
         with open(lpath, 'r+') as f:
             f.truncate(length)
+        self._sync_remote(path)
 
     def flush(self, path, fh):
         dbg('flush: {}'.format(path))
