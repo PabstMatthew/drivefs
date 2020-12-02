@@ -11,6 +11,7 @@ import re
 import shutil
 import io
 
+CLIENT_SECRET_FILE = 'credentials.json'
 SCOPES = ['https://www.googleapis.com/auth/drive']
 TYPE_FNAME = 'types.py'
 CONFIG_DIR = os.path.expanduser('~/.drivefs/')
@@ -56,13 +57,17 @@ class DriveAPI():
                 self.creds.refresh(Request())
             else:
                 dbg('Prompting user for permission.')
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                if not os.path.exists(CLIENT_SECRET_FILE):
+                    err('No OAuth credentials found! Expected a "{}" file. \
+                         Since this project is not registered as an official project, \
+                         you have to create your own OAuth client at \
+                         https://console.developers.google.com/apis/credentials/oauthclient'.format(CLIENT_SECRET_FILE))
+                flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
                 self.creds = flow.run_local_server(port=0)
             # Save the creds for the next run
             dbg('Saving credentials for next time.')
             with open(token_path, 'wb') as token:
                 pickle.dump(self.creds, token)
-        
 
     def _init_config(self):
         dbg('Loading configuration.')
