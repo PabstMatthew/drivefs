@@ -58,20 +58,23 @@ class DriveFS(Operations):
     def _cache(self, item, rpath):
         # Cache the file 'item' at the remote path 'rpath'
         dbg('Caching file "{}" at "{}".'.format(item[NAME], rpath))
-        lpath = self._lpath(rpath)
         # add extension
         mimetype = item[MTYPE]
         if mimetype in self.api.types:
             ext = self.api.types[mimetype][1]
-            if len(lpath) > len(ext) and lpath[len(lpath)-len(ext):] != ext:
-                lpath += ext
+            if len(rpath) > len(ext) and rpath[len(rpath)-len(ext):] != ext:
+                rpath += ext
+        lpath = self._lpath(rpath)
         # fix up internal state caches
-        self.path_to_id[rpath] = item[ID]
-        self.id_to_item[item[ID]] = item
+        fid = item[ID]
+        self.path_to_id[rpath] = fid
+        self.id_to_item[fid] = item
         parent = item[PARENTS][0]
         if not parent in self.id_to_children:
             self.id_to_children[parent] = []
-        self.id_to_children[parent].append(item[ID])
+        self.id_to_children[parent].append(fid) 
+        if mimetype == FOLDER_MTYPE: 
+            self.id_to_children[fid] = []
         # download the file
         self.api.download(item, lpath)
         # fix up file time metadata
@@ -83,6 +86,13 @@ class DriveFS(Operations):
         # Calculates the remote path for an item
         dbg('Getting remote path for item {}'.format(item))
         rpath = item[NAME]
+        # add extension
+        mimetype = item[MTYPE]
+        if mimetype in self.api.types:
+            ext = self.api.types[mimetype][1]
+            if len(rpath) > len(ext) and rpath[len(rpath)-len(ext):] != ext:
+                rpath += ext
+        # Iteratively compute the remote path
         cur_item = item
         is_trashed = item[TRASHED]
         while True:
@@ -94,10 +104,6 @@ class DriveFS(Operations):
             rpath = cur_item[NAME]+'/'+rpath
         if is_trashed:
             rpath = self.trash_dir+rpath
-        # add extension
-        mimetype = item[MTYPE]
-        if mimetype in self.api.types:
-            lpath += self.api.types[mimetype][1]
         return rpath
 
     def _get_cached_rpath(self, fid):
@@ -255,7 +261,7 @@ class DriveFS(Operations):
         # Push local file data/attributes to the remote.
         dbg('Syncing file "{}" with the remote'.format(rpath))
         if not rpath in self.path_to_id:
-            err('Could not find file "{}" in internal metadata!')
+            err('Could not find file "{}" in internal metadata!'.format(rpath))
         fid = self.path_to_id[rpath]
         lpath = self._lpath(rpath)
         '''
