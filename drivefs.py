@@ -62,7 +62,9 @@ class DriveFS(Operations):
         # add extension
         mimetype = item[MTYPE]
         if mimetype in self.api.types:
-            lpath += self.api.types[mimetype][1]
+            ext = self.api.types[mimetype][1]
+            if len(lpath) > len(ext) and lpath[len(lpath)-len(ext):] != ext:
+                lpath += ext
         # fix up internal state caches
         self.path_to_id[rpath] = item[ID]
         self.id_to_item[item[ID]] = item
@@ -122,10 +124,9 @@ class DriveFS(Operations):
         self.id_to_item[fid] = new_item
         old_parent = old_item[PARENTS][0]
         new_parent = new_item[PARENTS][0]
-        if old_parent != new_parent:
+        if fid in self.id_to_children[old_parent]:
             self.id_to_children[old_parent].remove(fid)
-            self.id_to_children[new_parent].append(fid)
-            dbg('Removing from metadata {} {}'.format(self.id_to_children[old_parent], self.id_to_children[new_parent]))
+        self.id_to_children[new_parent].append(fid)
 
     def _update_directory(self, fid, rpath):
         # Update folder contents
