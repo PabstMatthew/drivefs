@@ -149,12 +149,15 @@ class DriveAPI():
             f.write(fh.getbuffer())
 
     def delete(self, fid):
+        dbg('Deleting file with ID "{}"'.format(fid))
         self.service.files().delete(fileId=fid).execute()
 
     def update(self, fid, body):
+        dbg('Updating file with ID "{}" and body "{}"'.format(fid, body))
         return self.service.files().update(fileId=fid, body=body, fields=FIELDS).execute()
 
     def change_parent(self, fid, old_parent, new_parent):
+        dbg('Changing parent for file with ID "{}", old parent "{}", and new parent "{}"'.format(fid, old_parent, new_parent))
         return self.service.files().update(fileId=fid, addParents=new_parent, 
                     removeParents=old_parent, fields=FIELDS).execute()
 

@@ -301,6 +301,7 @@ class DriveFS(Operations):
         self.id_to_item[fid] = item
         if is_dir:
             self.id_to_children[fid] = []
+        self.id_to_children[parent].append(fid)
 
     def _remove_file(self, rpath):
         fid = self.path_to_id[rpath]
@@ -490,7 +491,7 @@ class DriveFS(Operations):
     def mkdir(self, path, mode):
         dbg('mkdir: {}'.format(path))
         # Make the locally cached copy, which will handle any errors (dirnoent, already exists, etc.)
-        os.mkdir(self._full_path(path), mode)
+        os.mkdir(self._lpath(path), mode)
         # Register the file with the remote
         self._register_file(path, True)
 
