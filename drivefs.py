@@ -19,7 +19,7 @@ class DriveFS(Operations):
         self.root_id = self.api.get_file('root')[ID]
 
         # These dicts cache local state, and need to be updated for relevant operations
-        self.path_to_id = {self.trash_dir: 'root'}
+        self.path_to_id = {self.trash_dir: 'root'} # TODO: deal with duplicate paths
         self.id_to_item = dict()
         self.id_to_children = dict()
 
@@ -336,8 +336,6 @@ class DriveFS(Operations):
             new_lpath = self._lpath(new_rpath)
             self.path_to_id[new_rpath] = fid
             os.rename(lpath, new_lpath)
-            if item[MTYPE] == FOLDER_MTYPE:
-                del self.id_to_children[fid]
 
     def _init_tmp(self):
         dbg('Initializing temporary directory')
@@ -355,7 +353,7 @@ class DriveFS(Operations):
         beg = rpath.rindex('/')
         if beg == 0:
             # parent is root
-            return 'root'
+            return self.root_id
         else:
             # find parent ID from cached metadata
             parent_path = rpath[:beg]
