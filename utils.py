@@ -27,7 +27,6 @@ def tstr_to_posix(tstr):
     if tstr is None:
         date = datetime.now(tz=timezone.utc)
     else:
-        #tstr = tstr[:tstr.index('.')]
         date = datetime.strptime(tstr, TIME_FORMAT)
     return calendar.timegm(date.timetuple())
 
