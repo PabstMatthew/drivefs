@@ -2,7 +2,7 @@ import time
 from datetime import datetime, timezone
 import calendar
 
-DEBUG = True
+DEBUG = False
 
 BLUE = '\033[94m'
 RED = '\033[92m'

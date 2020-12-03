@@ -548,7 +548,7 @@ class DriveFS(Operations):
         self.flush(path, fh)
 
 def main(mountpoint):
-    FUSE(DriveFS(), mountpoint, nothreads=True, foreground=True)
+    FUSE(DriveFS(), mountpoint, nothreads=True, foreground=False)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
